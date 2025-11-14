@@ -6,11 +6,14 @@ import React, {
   useEffect,
   useMemo,
   useState,
+  useRef,
 } from "react";
 
-/* ------------------------------------
- * Types & Utilities
- * ------------------------------------ */
+/* ============================================
+ *  TYPES
+ * ============================================ */
+
+/* ---------- Breakpoints ---------- */
 
 export type BreakpointKey = "base" | "sm" | "md" | "lg" | "xl";
 
@@ -21,7 +24,11 @@ const BREAKPOINTS: Record<Exclude<BreakpointKey, "base">, number> = {
   xl: 1280,
 };
 
+/* ---------- Responsive ---------- */
+
 export type Responsive<T> = T | Partial<Record<BreakpointKey, T>>;
+
+/* ---------- Geometry ---------- */
 
 export type Rect = {
   left?: number | string;
@@ -30,12 +37,15 @@ export type Rect = {
   height?: number | string;
 };
 
-export type Visibility = boolean | Partial<Record<BreakpointKey, boolean>>;
-
 export type LogicalSize = { width: number; height: number };
 export type LogicalRect = { x: number; y: number; w: number; h: number };
 
-// Rule Engine ساده: برای رفتار شرطی بر اساس عرض
+/* ---------- Visibility ---------- */
+
+export type Visibility = boolean | Partial<Record<BreakpointKey, boolean>>;
+
+/* ---------- Rule Engine ---------- */
+
 export type LayoutRule = {
   when: string; // "<600" | "600-1024" | ">1200" ...
   hidden?: boolean;
@@ -44,7 +54,7 @@ export type LayoutRule = {
   zIndex?: number;
 };
 
-/* ---------- Layout Validation ---------- */
+/* ---------- Validation ---------- */
 
 export type LayoutIssueType =
   | "MissingLogicalSize"
@@ -59,10 +69,41 @@ export type LayoutIssue = {
   type: LayoutIssueType;
   severity: LayoutIssueSeverity;
   message: string;
+  sectionId?: string;
   locatorId?: string;
   otherLocatorId?: string;
-  sectionId?: string;
 };
+
+/* ---------- SnapConfig (Phase 2) ---------- */
+
+export type SnapMode = "strict" | "soft";
+export type SnapAxes = "x" | "y" | "both";
+
+export type SnapConfig = {
+  grid: number; // 4, 8, 10, ...
+  mode?: SnapMode;
+  axes?: SnapAxes;
+  threshold?: number; // only for soft mode
+};
+
+/* ---------- Constraints (Phase 2) ---------- */
+
+export type LocatorConstraints = {
+  centerX?: boolean;
+  centerY?: boolean;
+  pinLeft?: boolean;
+  pinRight?: boolean;
+  pinTop?: boolean;
+  pinBottom?: boolean;
+
+  keepAspectRatio?: number; // e.g. 16/9
+  lockX?: boolean; // ignore offsetX / rule offsetX
+  lockY?: boolean; // ignore offsetY / rule offsetY
+};
+
+/* ============================================
+ *  UTILS
+ * ============================================ */
 
 function currentBreakpoint(width: number): BreakpointKey {
   if (width >= BREAKPOINTS.xl) return "xl";
@@ -81,13 +122,12 @@ function pickResponsive<T>(
     return value as T;
   }
   const obj = value as Partial<Record<BreakpointKey, T>>;
-  return (obj[bp] ?? obj.base) as T;
+  return obj[bp] ?? obj.base;
 }
 
 function normalizeDim(val?: number | string): string | undefined {
   if (val === undefined || val === null) return undefined;
-  if (typeof val === "number") return `${val}px`;
-  return val;
+  return typeof val === "number" ? `${val}px` : val;
 }
 
 function resolveVisibility(
@@ -100,19 +140,18 @@ function resolveVisibility(
   return v === undefined ? true : !!v;
 }
 
-// مرتب‌سازی اولیه بر اساس order
-function sortByOrder(children: React.ReactNode): React.ReactNode {
+function sortByOrder(children: React.ReactNode): React.ReactNode[] {
   const arr = React.Children.toArray(children) as React.ReactElement[];
-  const withOrder = arr.map((el, idx) => {
-    const props: any = (el as any)?.props;
-    const o = typeof props?.order === "number" ? props.order : idx;
-    return { el, order: o };
-  });
-  withOrder.sort((a, b) => a.order - b.order);
-  return withOrder.map((x) => x.el);
+  return arr
+    .map((el, idx) => {
+      const props: any = (el as any)?.props;
+      const o = typeof props?.order === "number" ? props.order : idx;
+      return { el, order: o };
+    })
+    .sort((a, b) => a.order - b.order)
+    .map((x) => x.el);
 }
 
-// Rule Engine ساده برای width
 function matchRule(when: string, width: number): boolean {
   const s = when.trim();
   if (!s) return false;
@@ -134,39 +173,69 @@ function matchRule(when: string, width: number): boolean {
   return false;
 }
 
-/* ------------------------------------
- * Event / Hook System
- * ------------------------------------ */
+function normalizeSnapConfig(
+  snap?: number | SnapConfig
+): SnapConfig | undefined {
+  if (!snap) return undefined;
+  if (typeof snap === "number") {
+    return {
+      grid: snap,
+      mode: "strict",
+      axes: "both",
+      threshold: 0,
+    };
+  }
+  return {
+    grid: snap.grid,
+    mode: snap.mode ?? "strict",
+    axes: snap.axes ?? "both",
+    threshold: snap.threshold ?? 0,
+  };
+}
+
+/* ============================================
+ *  EVENTS
+ * ============================================ */
 
 export type PsyLayoutEvents = {
-  onError?: (error: Error) => void;
+  onRenderStart?: () => void;
+  onRenderEnd?: () => void;
+
   onSectionRender?: (info: { id?: string }) => void;
   onLocatorRender?: (info: { id?: string; zIndex?: number }) => void;
 
-  // فاز ۱:
-  onRenderStart?: () => void;
-  onRenderEnd?: () => void;
   onLayoutValidation?: (info: {
     sectionId?: string;
     issues: LayoutIssue[];
   }) => void;
+
   onLocatorCollision?: (info: {
     sectionId?: string;
     aId?: string;
     bId?: string;
   }) => void;
+
+  onError?: (error: Error) => void;
 };
 
 const EventsCtx = createContext<PsyLayoutEvents | null>(null);
 
-/* ------------------------------------
- * Breakpoint Context
- * ------------------------------------ */
+export const usePsyEvents = () => useContext(EventsCtx);
+
+/* ============================================
+ *  BREAKPOINT CONTEXT
+ * ============================================ */
 
 const DesignCtx = createContext<{ bp: BreakpointKey; width: number }>({
   bp: "base",
   width: 0,
 });
+
+export const useBreakpoint = () => useContext(DesignCtx);
+
+/* ============================================
+ *  MAIN PROVIDER
+ * ============================================ */
 
 export type DesignManagerProviderProps = {
   children: React.ReactNode;
@@ -188,9 +257,7 @@ export const DesignManagerProvider: React.FC<DesignManagerProviderProps> = ({
   }, []);
 
   const bp = useMemo(() => currentBreakpoint(w), [w]);
-  const value = useMemo(() => ({ bp, width: w }), [bp, w]);
 
-  // Hooks رندر کلی
   useEffect(() => {
     events?.onRenderStart?.();
     return () => {
@@ -201,21 +268,20 @@ export const DesignManagerProvider: React.FC<DesignManagerProviderProps> = ({
 
   return (
     <EventsCtx.Provider value={events ?? null}>
-      <DesignCtx.Provider value={value}>{children}</DesignCtx.Provider>
+      <DesignCtx.Provider value={{ bp, width: w }}>
+        {children}
+      </DesignCtx.Provider>
     </EventsCtx.Provider>
   );
 };
 
-export const useBreakpoint = () => useContext(DesignCtx);
-export const usePsyEvents = () => useContext(EventsCtx);
-
-/* ------------------------------------
- * Free Layout / Snap / Logical Context
- * ------------------------------------ */
+/* ============================================
+ *  FREE LAYOUT CONTEXT
+ * ============================================ */
 
 type FreeLayoutContextValue = {
   logicalSize: LogicalSize | null;
-  snap?: number;
+  snap?: SnapConfig;
 };
 
 const FreeLayoutCtx = createContext<FreeLayoutContextValue>({
@@ -223,13 +289,14 @@ const FreeLayoutCtx = createContext<FreeLayoutContextValue>({
   snap: undefined,
 });
 
-/* ------------------------------------
- * Container
- * ------------------------------------ */
+/* ============================================
+ *  CONTAINER
+ * ============================================ */
 
 export type ContainerProps = {
   id?: string;
   children?: React.ReactNode;
+
   width?: Responsive<number | string>;
   maxWidth?: Responsive<number | string>;
   padding?: Responsive<number | string>;
@@ -237,6 +304,7 @@ export type ContainerProps = {
   borderRadius?: Responsive<number | string>;
   hidden?: Visibility;
   order?: number;
+
   className?: string;
   style?: React.CSSProperties;
 };
@@ -280,9 +348,9 @@ export const Container: React.FC<ContainerProps> = ({
   );
 };
 
-/* ------------------------------------
- * Section
- * ------------------------------------ */
+/* ============================================
+ *  SECTION
+ * ============================================ */
 
 export type SectionMode = "free" | "row" | "column";
 
@@ -306,8 +374,22 @@ export type SectionProps = {
   children?: React.ReactNode;
 
   logicalSize?: LogicalSize;
-  snap?: number;
+  snap?: number | SnapConfig;
   rules?: LayoutRule[];
+
+  /* Paging / Slider / Lazy */
+  pagingMode?: "none" | "pages" | "slider";
+  pageSize?: number;
+  defaultPage?: number;
+  currentPage?: number;
+  onPageChange?: (page: number) => void;
+  showDots?: boolean;
+  showArrows?: boolean;
+  autoPlay?: boolean;
+  autoPlayInterval?: number;
+  loop?: boolean;
+  lazy?: boolean;
+  animation?: "none" | "slide" | "fade" | "scale";
 };
 
 function applySectionRules(
@@ -328,7 +410,7 @@ function applySectionRules(
   return visible;
 }
 
-/* ---------- Layout Validation Engine برای Section ---------- */
+/* ---------- Validation Engine ---------- */
 
 type RawLocatorPropsForValidation = {
   id?: string;
@@ -370,7 +452,7 @@ function validateSectionLayout(options: {
 
   const locators = extractLocatorsForValidation(children);
 
-  // ۱) free-mode بدون logicalSize → خطا
+  // ۱) free-mode بدون logicalSize
   if (mode === "free" && !logicalSize) {
     issues.push({
       type: "MissingLogicalSize",
@@ -381,7 +463,7 @@ function validateSectionLayout(options: {
     });
   }
 
-  // کمک برای محاسبه‌ی تقریباً مستطیل‌ها جهت overlap
+  // برای overlap
   type Box = {
     id?: string;
     x: number;
@@ -406,25 +488,23 @@ function validateSectionLayout(options: {
       : undefined;
 
     // ۲) rect ناقص در free-mode
-    if (mode === "free") {
-      if (r) {
-        const hasW = r.width !== undefined;
-        const hasH = r.height !== undefined;
-        if (!hasW || !hasH) {
-          issues.push({
-            type: "InvalidRect",
-            severity: "warning",
-            message: `Locator "${
-              loc.id ?? "unknown"
-            }" در free-mode rect ناقص دارد. بهتر است width/height هر دو مشخص باشند.`,
-            locatorId: loc.id,
-            sectionId,
-          });
-        }
+    if (mode === "free" && r) {
+      const hasW = r.width !== undefined;
+      const hasH = r.height !== undefined;
+      if (!hasW || !hasH) {
+        issues.push({
+          type: "InvalidRect",
+          severity: "warning",
+          message: `Locator "${
+            loc.id ?? "unknown"
+          }" در free-mode rect ناقص دارد. بهتر است width/height هر دو مشخص باشند.`,
+          locatorId: loc.id,
+          sectionId,
+        });
       }
     }
 
-    // ۳) offset عددی بدون logicalSize (هشدار)
+    // ۳) offset عددی بدون logicalSize
     const ox = pickResponsive(loc.offsetX, bp);
     const oy = pickResponsive(loc.offsetY, bp);
     if ((typeof ox === "number" || typeof oy === "number") && !logicalSize) {
@@ -439,20 +519,20 @@ function validateSectionLayout(options: {
       });
     }
 
-    // ۴) ModeConflict: استفاده از rect/logicalRect در row/column
+    // ۴) ModeConflict در row/column
     if ((mode === "row" || mode === "column") && (r || lr)) {
       issues.push({
         type: "ModeConflict",
         severity: "warning",
         message: `Locator "${
           loc.id ?? "unknown"
-        }" در حالت ${mode} از rect/logicalRect استفاده کرده است. معمولاً در row/column بهتر است از flex و offset استفاده کنید، نه position:absolute.`,
+        }" در حالت ${mode} از rect/logicalRect استفاده کرده است. در row/column بهتر است از flex و offset استفاده شود، نه position:absolute.`,
         locatorId: loc.id,
         sectionId,
       });
     }
 
-    // ۵) اگر logicalSize و logicalRect داریم → جعبه منطقی برای تشخیص overlap
+    // ۵) برای overlap در free-mode
     if (mode === "free" && logicalSize && lr) {
       boxes.push({
         id: loc.id,
@@ -464,7 +544,7 @@ function validateSectionLayout(options: {
     }
   }
 
-  // ۶) Overlap detection (ساده) در free-mode
+  // ۶) Overlap detection
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
       const a = boxes[i];
@@ -477,14 +557,14 @@ function validateSectionLayout(options: {
         0,
         Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
       );
-      const overlapArea = overlapX * overlapY;
-      if (overlapArea > 0) {
+      const area = overlapX * overlapY;
+      if (area > 0) {
         issues.push({
           type: "Overlap",
           severity: "warning",
           message: `Locator "${
             a.id ?? "A"
-          }" و "${b.id ?? "B"}" در free-mode روی هم افتاده‌اند. اگر عمدی نیست، logicalRect را اصلاح کنید یا zIndex/offset را تغییر دهید.`,
+          }" و "${b.id ?? "B"}" در free-mode روی هم افتاده‌اند.`,
           locatorId: a.id,
           otherLocatorId: b.id,
           sectionId,
@@ -495,6 +575,50 @@ function validateSectionLayout(options: {
 
   return issues;
 }
+
+/* ---------- zIndex SORTING ---------- */
+
+function sortLocatorsByZIndex(
+  children: React.ReactNode,
+  bp: BreakpointKey,
+  events: PsyLayoutEvents | null
+): React.ReactElement[] {
+  const arr = React.Children.toArray(children) as React.ReactElement[];
+
+  const locators = arr.map((el, idx) => {
+    const props: any = (el as any)?.props || {};
+    const rawZ = props.zIndex as Responsive<number> | number | undefined;
+    const resolvedZ =
+      typeof rawZ === "object"
+        ? pickResponsive<number>(rawZ as Responsive<number>, bp)
+        : (rawZ as number | undefined);
+    const z = resolvedZ ?? idx + 1;
+    return { el, zIndex: z };
+  });
+
+  const seen = new Set<number>();
+  for (const item of locators) {
+    if (seen.has(item.zIndex)) {
+      const err = new Error(
+        `Duplicate zIndex ${item.zIndex} in Section. You must uniquely order all Locators' zIndex.`
+      );
+      console.error(
+        `❌ Duplicate zIndex detected: ${item.zIndex}
+Each Locator must have a unique zIndex inside a Section.
+Offending element:`,
+        item.el
+      );
+      events?.onError?.(err);
+      throw err;
+    }
+    seen.add(item.zIndex);
+  }
+
+  locators.sort((a, b) => a.zIndex - b.zIndex);
+  return locators.map((x) => x.el);
+}
+
+/* ---------- SECTION COMPONENT (با Slider درگ‌دار) ---------- */
 
 export const Section: React.FC<SectionProps> = ({
   id,
@@ -517,6 +641,19 @@ export const Section: React.FC<SectionProps> = ({
   logicalSize,
   snap,
   rules,
+
+  pagingMode = "none",
+  pageSize,
+  defaultPage = 0,
+  currentPage,
+  onPageChange,
+  showDots = true,
+  showArrows = true,
+  autoPlay = false,
+  autoPlayInterval = 5000,
+  loop = true,
+  lazy = true,
+  animation = "none",
 }) => {
   const { bp, width: viewportWidth } = useBreakpoint();
   const events = usePsyEvents();
@@ -525,8 +662,162 @@ export const Section: React.FC<SectionProps> = ({
   const visible = applySectionRules(baseVisible, rules, viewportWidth);
   if (!visible) return null;
 
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const [sectionWidth, setSectionWidth] = useState<number>(0);
+
+  useEffect(() => {
+    const update = () => {
+      if (sectionRef.current) {
+        setSectionWidth(sectionRef.current.offsetWidth || 0);
+      }
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
   const m = pickResponsive(mode, bp) ?? "row";
   const isFree = m === "free";
+  const snapConfig = normalizeSnapConfig(snap);
+
+  /* ---------- Paging / Slider Logic ---------- */
+
+  const orderedAll = sortByOrder(children);
+  const isPaged = pagingMode !== "none";
+  const isSliderSlide = pagingMode === "slider" && animation === "slide";
+
+  const effectivePageSize =
+    isPaged && pageSize && pageSize > 0
+      ? pageSize
+      : orderedAll.length || 1;
+
+  const totalPages =
+    orderedAll.length > 0
+      ? Math.max(1, Math.ceil(orderedAll.length / effectivePageSize))
+      : 1;
+
+  const [internalPage, setInternalPage] = useState<number>(defaultPage);
+
+  const rawPageIndex =
+    typeof currentPage === "number" ? currentPage : internalPage;
+
+  const safePageIndex =
+    rawPageIndex < 0
+      ? 0
+      : rawPageIndex > totalPages - 1
+      ? totalPages - 1
+      : rawPageIndex;
+
+  useEffect(() => {
+    if (rawPageIndex !== safePageIndex && typeof currentPage !== "number") {
+      setInternalPage(safePageIndex);
+    }
+  }, [rawPageIndex, safePageIndex, currentPage]);
+
+  const goToPage = (next: number) => {
+    let target = next;
+    if (next < 0) {
+      target = loop ? totalPages - 1 : 0;
+    } else if (next > totalPages - 1) {
+      target = loop ? 0 : totalPages - 1;
+    }
+
+    if (typeof currentPage !== "number") {
+      setInternalPage(target);
+    }
+    onPageChange?.(target);
+  };
+
+  const goNext = () => {
+    if (!isPaged || totalPages <= 1) return;
+    goToPage(safePageIndex + 1);
+  };
+
+  const goPrev = () => {
+    if (!isPaged || totalPages <= 1) return;
+    goToPage(safePageIndex - 1);
+  };
+
+  // autoplay فقط برای slider+slide
+  useEffect(() => {
+    if (!isPaged || !autoPlay || totalPages <= 1 || !isSliderSlide) return;
+    const id = window.setInterval(() => {
+      goNext();
+    }, autoPlayInterval);
+    return () => window.clearInterval(id);
+  }, [isPaged, autoPlay, autoPlayInterval, totalPages, isSliderSlide]);
+
+  /* ---------- Drag State برای slider slide ---------- */
+
+  const [dragging, setDragging] = useState(false);
+  const [dragStartX, setDragStartX] = useState(0);
+  const [dragDeltaX, setDragDeltaX] = useState(0);
+
+  const dragThresholdPx = 50;
+
+  const handlePointerDown = (clientX: number) => {
+    if (!isSliderSlide) return;
+    setDragging(true);
+    setDragStartX(clientX);
+    setDragDeltaX(0);
+  };
+
+  const handlePointerMove = (clientX: number) => {
+    if (!isSliderSlide || !dragging) return;
+    setDragDeltaX(clientX - dragStartX);
+  };
+
+  const handlePointerUp = () => {
+    if (!isSliderSlide || !dragging) return;
+    const delta = dragDeltaX;
+
+    if (Math.abs(delta) > dragThresholdPx) {
+      if (delta < 0) {
+        goNext();
+      } else {
+        goPrev();
+      }
+    }
+
+    setDragging(false);
+    setDragDeltaX(0);
+  };
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    handlePointerDown(e.clientX);
+  };
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (!dragging) return;
+    handlePointerMove(e.clientX);
+  };
+
+  const onMouseUp = () => {
+    handlePointerUp();
+  };
+
+  const onMouseLeave = () => {
+    handlePointerUp();
+  };
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length > 0) {
+      handlePointerDown(e.touches[0].clientX);
+    }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (!dragging) return;
+    if (e.touches.length > 0) {
+      handlePointerMove(e.touches[0].clientX);
+    }
+  };
+
+  const onTouchEnd = () => {
+    handlePointerUp();
+  };
+
+  /* ---------- Section Style ---------- */
 
   const resolvedStyle: React.CSSProperties = {
     position: "relative",
@@ -549,13 +840,13 @@ export const Section: React.FC<SectionProps> = ({
     ...style,
   };
 
-  // free + logicalSize: aspectRatio
   if (isFree && !resolvedStyle.height && logicalSize) {
     (resolvedStyle as any).aspectRatio = `${logicalSize.width} / ${logicalSize.height}`;
     resolvedStyle.overflow = resolvedStyle.overflow ?? "hidden";
   }
 
-  // اعتبارسنجی layout
+  /* ---------- Validation ---------- */
+
   const validationIssues = validateSectionLayout({
     sectionId: id,
     mode: m,
@@ -577,7 +868,7 @@ export const Section: React.FC<SectionProps> = ({
             issue.message,
             "\n",
             suggestionPrefix,
-            "اگر از free-mode استفاده می‌کنید، logicalSize (مثلاً 1200×600) را مشخص کنید تا مختصات نسبتی و درست کار کنند."
+            "اگر از free-mode استفاده می‌کنید، logicalSize (مثلاً 1200×600) را مشخص کنید."
           );
           if (issue.severity === "error") {
             const err = new Error(issue.message);
@@ -594,7 +885,7 @@ export const Section: React.FC<SectionProps> = ({
             issue.message,
             "\n",
             suggestionPrefix,
-            "یا logicalSize را اضافه کنید، یا offset را از واحدهای درصدی/رشته‌ای مثل '10%' و '1rem' استفاده کنید."
+            "یا logicalSize را اضافه کنید، یا offset را به صورت درصدی/رشته‌ای مثل '10%' بدهید."
           );
           break;
         case "ModeConflict":
@@ -603,7 +894,7 @@ export const Section: React.FC<SectionProps> = ({
             issue.message,
             "\n",
             suggestionPrefix,
-            "در row/column بهتر است از flex/offset استفاده شود و rect برای free-mode نگه داشته شود."
+            "در row/column بهتر است از flex و offset استفاده شود، rect را برای free-mode نگه دارید."
           );
           break;
         case "Overlap":
@@ -612,7 +903,7 @@ export const Section: React.FC<SectionProps> = ({
             issue.message,
             "\n",
             suggestionPrefix,
-            "اگر این روی‌هم‌افتادگی ناخواسته است، logicalRect را اصلاح کنید یا zIndex/offset آنها را تغییر دهید."
+            "اگر روی هم افتادن ناخواسته است، logicalRect یا zIndex/offset را اصلاح کنید."
           );
           events?.onLocatorCollision?.({
             sectionId: id,
@@ -624,78 +915,208 @@ export const Section: React.FC<SectionProps> = ({
     }
   }
 
-  const ordered = sortByOrder(children);
-  const content = sortLocatorsByZIndex(ordered, bp, events);
+  /* ---------- Paging: slicing / lazy (غیر slider-slide) ---------- */
+
+  let pageChildren: React.ReactNode[] = orderedAll;
+
+  if (
+    isPaged &&
+    totalPages > 1 &&
+    !isSliderSlide // در slider+slide، خودمان ترک را مدیریت می‌کنیم
+  ) {
+    if (lazy) {
+      const start = safePageIndex * effectivePageSize;
+      const end = start + effectivePageSize;
+      pageChildren = orderedAll.slice(start, end);
+    } else {
+      pageChildren = orderedAll.map((el, idx) => {
+        const page = Math.floor(idx / effectivePageSize);
+        const isCurrent = page === safePageIndex;
+        if (isCurrent) return el;
+        const props: any = (el as any).props || {};
+        return React.cloneElement(el as any, {
+          ...props,
+          style: {
+            ...(props.style || {}),
+            opacity: 0,
+            pointerEvents: "none",
+            position: "absolute",
+          },
+          "data-psy-hidden-page": page,
+        });
+      });
+    }
+  }
+
+  const baseForZ =
+    isSliderSlide && isPaged && totalPages > 1 ? orderedAll : pageChildren;
+
+  const zSorted = sortLocatorsByZIndex(baseForZ, bp, events);
+
+  let innerContent: React.ReactNode;
+
+  if (isSliderSlide && isPaged && totalPages > 1) {
+    const slides = zSorted;
+    const slideCount = slides.length || 1;
+
+    const deltaPercent =
+      sectionWidth > 0 ? (dragDeltaX / sectionWidth) * 100 : 0;
+    const basePercent = -safePageIndex * 100;
+    const totalPercent = basePercent + (dragging ? deltaPercent : 0);
+
+    innerContent = (
+      <div
+        className="psy-slider-viewport"
+        style={{
+          overflow: "hidden",
+          width: "100%",
+          height: "100%",
+          position: "relative",
+        }}
+      >
+        <div
+          className="psy-slider-track"
+          style={{
+            display: "flex",
+            width: `${slideCount * 100}%`,
+            transform: `translateX(${totalPercent}%)`,
+            transition: dragging ? "none" : "transform 350ms ease",
+            touchAction: "pan-y",
+          }}
+        >
+          {slides.map((child, idx) => (
+            <div
+              key={(child as any).key ?? idx}
+              style={{
+                flex: "0 0 100%",
+                maxWidth: "100%",
+              }}
+            >
+              {child}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  } else {
+    innerContent = zSorted;
+  }
 
   events?.onSectionRender?.({ id });
 
-  return (
-    <section id={id} className={className} style={resolvedStyle}>
-      <FreeLayoutCtx.Provider
-        value={{ logicalSize: logicalSize ?? null, snap }}
+  /* ---------- Paging Controls ---------- */
+
+  let controls: React.ReactNode = null;
+  if (isPaged && totalPages > 1 && (showDots || showArrows)) {
+    controls = (
+      <div
+        className="psy-section-controls"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          marginTop: 12,
+        }}
       >
-        {content}
+        {showArrows && (
+          <button
+            type="button"
+            onClick={goPrev}
+            aria-label="Previous"
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "4px 10px",
+              cursor: "pointer",
+              background: "#eee",
+              fontSize: 16,
+            }}
+          >
+            ‹
+          </button>
+        )}
+
+        {showDots && (
+          <div
+            className="psy-section-dots"
+            style={{ display: "flex", gap: 6 }}
+          >
+            {Array.from({ length: totalPages }).map((_, idx) => {
+              const active = idx === safePageIndex;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => goToPage(idx)}
+                  aria-label={`Page ${idx + 1}`}
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 999,
+                    border: "none",
+                    cursor: "pointer",
+                    background: active ? "#333" : "#ccc",
+                    padding: 0,
+                  }}
+                />
+              );
+            })}
+          </div>
+        )}
+
+        {showArrows && (
+          <button
+            type="button"
+            onClick={goNext}
+            aria-label="Next"
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "4px 10px",
+              cursor: "pointer",
+              background: "#eee",
+              fontSize: 16,
+            }}
+          >
+            ›
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <section
+      ref={sectionRef as any}
+      id={id}
+      className={className}
+      style={resolvedStyle}
+      data-psy-page={safePageIndex}
+      data-psy-pages={totalPages}
+      data-psy-animation={animation}
+      data-psy-mode={pagingMode}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseLeave}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      <FreeLayoutCtx.Provider
+        value={{ logicalSize: logicalSize ?? null, snap: snapConfig }}
+      >
+        {innerContent}
       </FreeLayoutCtx.Provider>
+      {controls}
     </section>
   );
 };
 
-/* ------------------------------------
- * zIndex Sorting + Validation
- * ------------------------------------ */
-
-function sortLocatorsByZIndex(
-  children: React.ReactNode,
-  bp: BreakpointKey,
-  events: PsyLayoutEvents | null
-): React.ReactNode {
-  const arr = React.Children.toArray(children) as React.ReactElement[];
-
-  const locators = arr.map((el, idx) => {
-    const props: any = (el as any)?.props || {};
-    const rawZ: any = props.zIndex;
-    const resolvedZ =
-      typeof rawZ === "object"
-        ? pickResponsive<number>(rawZ, bp)
-        : (rawZ as number | undefined);
-    const z = resolvedZ ?? idx + 1;
-    return { el, zIndex: z };
-  });
-
-  const seen = new Set<number>();
-  for (const item of locators) {
-    if (seen.has(item.zIndex)) {
-      const err = new Error(
-        `Duplicate zIndex ${item.zIndex} in Section. You must uniquely order all Locators' zIndex.`
-      );
-      console.error(
-        `❌ Duplicate zIndex detected: ${item.zIndex}\n` +
-          `Each Locator must have a unique zIndex inside a Section.\n` +
-          `Please fix the zIndex ordering. Offending element:`,
-        item.el
-      );
-      events?.onError?.(err);
-      throw err;
-    }
-    seen.add(item.zIndex);
-  }
-
-  locators.sort((a, b) => a.zIndex - b.zIndex);
-  return locators.map((x) => x.el);
-}
-
-/* ------------------------------------
- * Locator
- * ------------------------------------ */
-
-export type LocatorConstraints = {
-  centerX?: boolean;
-  centerY?: boolean;
-  pinLeft?: boolean;
-  pinRight?: boolean;
-  pinTop?: boolean;
-  pinBottom?: boolean;
-};
+/* ============================================
+ *  LOCATOR
+ * ============================================ */
 
 export type LocatorProps = {
   id?: string;
@@ -775,13 +1196,30 @@ export const Locator: React.FC<LocatorProps> = ({
     let w = lr.w;
     let h = lr.h;
 
-    if (snap && snap > 0) {
-      const s = snap;
-      const roundTo = (val: number) => Math.round(val / s) * s;
-      x = roundTo(x);
-      y = roundTo(y);
-      w = roundTo(w);
-      h = roundTo(h);
+    if (snap && snap.grid > 0) {
+      const grid = snap.grid;
+      const mode = snap.mode ?? "strict";
+      const axes = snap.axes ?? "both";
+      const threshold = snap.threshold ?? 0;
+
+      const snapValue = (val: number) => {
+        const rounded = Math.round(val / grid) * grid;
+        if (mode === "soft") {
+          const diff = Math.abs(rounded - val);
+          if (diff <= threshold) return rounded;
+          return val;
+        }
+        return rounded;
+      };
+
+      if (axes === "x" || axes === "both") {
+        x = snapValue(x);
+        w = snapValue(w);
+      }
+      if (axes === "y" || axes === "both") {
+        y = snapValue(y);
+        h = snapValue(h);
+      }
     }
 
     const { width: LW, height: LH } = logicalSize;
@@ -793,6 +1231,18 @@ export const Locator: React.FC<LocatorProps> = ({
     };
   } else {
     finalRect = pickResponsive(rect ?? {}, bp) ?? {};
+  }
+
+  if (constraints?.keepAspectRatio && finalRect) {
+    const ratio = constraints.keepAspectRatio;
+    const wVal = finalRect.width;
+    const hVal = finalRect.height;
+
+    if (typeof wVal === "number" && typeof hVal !== "number") {
+      finalRect.height = wVal / ratio;
+    } else if (typeof hVal === "number" && typeof wVal !== "number") {
+      finalRect.width = hVal * ratio;
+    }
   }
 
   const r = finalRect ?? {};
@@ -821,31 +1271,33 @@ export const Locator: React.FC<LocatorProps> = ({
     alignSelf: pickResponsive(alignSelf ?? undefined, bp),
   };
 
-  // offsetX / offsetY نسبتی (اگر logicalSize داریم)
   const rawOx = ruleOffsetX ?? pickResponsive(offsetX, bp);
   const rawOy = ruleOffsetY ?? pickResponsive(offsetY, bp);
+
+  const effectiveOx = constraints?.lockX ? undefined : rawOx;
+  const effectiveOy = constraints?.lockY ? undefined : rawOy;
 
   let ox: string | undefined;
   let oy: string | undefined;
 
-  if (typeof rawOx === "number") {
+  if (typeof effectiveOx === "number") {
     if (logicalSize) {
-      ox = `${(rawOx / logicalSize.width) * 100}%`;
+      ox = `${(effectiveOx / logicalSize.width) * 100}%`;
     } else {
-      ox = `${rawOx}px`;
+      ox = `${effectiveOx}px`;
     }
-  } else if (typeof rawOx === "string") {
-    ox = rawOx;
+  } else if (typeof effectiveOx === "string") {
+    ox = effectiveOx;
   }
 
-  if (typeof rawOy === "number") {
+  if (typeof effectiveOy === "number") {
     if (logicalSize) {
-      oy = `${(rawOy / logicalSize.height) * 100}%`;
+      oy = `${(effectiveOy / logicalSize.height) * 100}%`;
     } else {
-      oy = `${rawOy}px`;
+      oy = `${effectiveOy}px`;
     }
-  } else if (typeof rawOy === "string") {
-    oy = rawOy;
+  } else if (typeof effectiveOy === "string") {
+    oy = effectiveOy;
   }
 
   const userStyle = style ?? {};
@@ -854,7 +1306,6 @@ export const Locator: React.FC<LocatorProps> = ({
   const translate =
     ox || oy ? `translate(${ox ?? "0"}, ${oy ?? "0"})` : undefined;
 
-  // constraints در حالت absolute
   if (constraints && absStyle.position === "absolute") {
     if (constraints.centerX) {
       absStyle.left = "50%";
