@@ -36,7 +36,7 @@ import {
   Container,
   Section,
   Locator,
-} from "@girpazh/core/designmanager/design-manager";
+} from "@yourproject/core/psylayout-engine/design-manager";
 ```
 
 3. در `layout.tsx` یا روت اپ، PsyLayout Provider را اضافه کن:
