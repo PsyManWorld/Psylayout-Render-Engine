@@ -9,7 +9,7 @@ import {
   Locator,
   useBreakpoint,
   type LayoutIssue,
-} from "@girpazh/core/designmanager/design-manager";
+} from "../psylayoutengine/design-manager";
 
 /* -------------------------
  * Helpers
