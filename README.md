@@ -72,7 +72,7 @@ npm run dev
 می‌توانی `design-manager` را مستقیماً ایمپورت کنی یا از Provider آن در روت برنامه استفاده کنی. مثال زیر یک الگوی ساده برای قرار دادن Provider در `app/layout.tsx` (Next.js) است:
 
 ```tsx
-import { DesignManagerProvider } from "./psylayout-engine/src/design-manager";
+import { DesignManagerProvider } from "./psylayout-engine/design-manager";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
