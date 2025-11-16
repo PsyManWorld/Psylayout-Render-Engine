@@ -70,6 +70,6 @@ PsyLayout combines flexible layout primitives, a rich validation engine, respons
 Install the core package (example namespace):
 
 ```bash
-npm install @girpazh/core
-# or
-yarn add @girpazh/core
+npm install 
+
+npm run dev
