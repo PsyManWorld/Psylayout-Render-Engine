@@ -1,6 +1,6 @@
 # PsyLayout Engine · Design Manager
 
-A highly–opinionated **layout & render engine** for React/Next.js, designed specifically for the **Girpazh** ecosystem.  
+A highly–opinionated **layout & render engine** for React/Next.js, designed specifically for the **Next.js** ecosystem.  
 PsyLayout combines flexible layout primitives, a rich validation engine, responsive rules, and a first–class slider/paging system into a single, cohesive API.
 
 > Built for **dark, precise and predictable UIs** – used as the core layout engine of the new Girpazh frontend.
